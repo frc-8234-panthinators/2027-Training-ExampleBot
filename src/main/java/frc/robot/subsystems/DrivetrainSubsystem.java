@@ -75,7 +75,7 @@ public class DrivetrainSubsystem extends SubsystemBase
                                    maxLinearVelocity.times(translationYScalar.getAsDouble())
                                                                      .in(MetersPerSecond),
                                    maxAngularVelocity.times(rotationScalar.getAsDouble())
-                                                                      .in(RadiansPerSecond));
+                                                                     .in(RadiansPerSecond));
   }
 
   public SwerveModule createModule(TalonFX drive, TalonFX azimuth, CANcoder absoluteEncoder, String moduleName,
@@ -213,4 +213,4 @@ public class DrivetrainSubsystem extends SubsystemBase
   }
 }
 
-}
+
