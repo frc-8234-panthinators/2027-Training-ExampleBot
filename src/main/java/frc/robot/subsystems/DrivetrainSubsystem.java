@@ -42,10 +42,11 @@ import yams.telemetry.SwerveModuleTelemetryConfig;
 import yams.mechanisms.swerve.utility.SwerveInputStream;
 import yams.motorcontrollers.SmartMotorController;
 import yams.motorcontrollers.SmartMotorControllerConfig;
+import yams.motorcontrollers.remote.TalonFXWrapper;
 
 public class DrivetrainSubsystem extends SubsystemBase
 {
-    private final SwerveDrive drive = new SwerveDrive(null);
+    private final SwerveDrive drive;
     private final Field2d field = new Field2d();
 
     private AngularVelocity maxAngularVelocity = DegreesPerSecond.of(360);
@@ -81,47 +82,135 @@ public class DrivetrainSubsystem extends SubsystemBase
                                    Translation2d location)
   {
 
-    MechanismGearing driveGearing = new MechanismGearing(12.75); //Placeholder value
+    MechanismGearing driveGearing = new MechanismGearing(6.03); // Drive gearRatio
 
-    MechanismGearing azimuthGearing = new MechanismGearing(6.75); //Placeholder value
+    MechanismGearing azimuthGearing = new MechanismGearing(26.09); // Angle gearRatio
 
-    Distance wheelDiameter = Inches.of(4); //Placeholder value
+    Distance wheelDiameter = Inches.of(4); // Diameter of Wheel
     SmartMotorControllerConfig driveConfig = new SmartMotorControllerConfig(this)
-      .withWheelDiameter(wheelDiameter)
+        .withWheelDiameter(wheelDiameter)
 
-      .withClosedLoopController(0.3, 0, 0)
-      .withGearing(driveGearing)
+        .withClosedLoopController(0.3, 0, 0)
+        .withGearing(driveGearing)
 
-      .withFeedforward(new SimpleMotorFeedforward(0,
-                                                     12.0 / (maxLinearVelocity.in(MetersPerSecond) /
-                                                          wheelDiameter.in(Meters)),
-                                                  0.01))
+        .withFeedforward(new SimpleMotorFeedforward(0,
+                                                       12.0 / (maxLinearVelocity.in(MetersPerSecond) /
+                                                              wheelDiameter.in(Meters)),
+                                                    0.01))
 
-      .withStatorCurrentLimit(Amps.of(40))
-      .withTelemetry("driveMotor", SmartMotorControllerConfig.TelemetryVerbosity.HIGH);
+        .withStatorCurrentLimit(Amps.of(60)) // drive statorCurrentLimit
+        .withTelemetry("driveMotor", SmartMotorControllerConfig.TelemetryVerbosity.HIGH);
+  
+    SmartMotorControllerConfig azimuthConfig = new SmartMotorControllerConfig(this)
+        .withClosedLoopController(1, 0, 0)
+        .withFeedforward(new SimpleMotorFeedforward(0, 1))
+        .withGearing(azimuthGearing)
+        .withStatorCurrentLimit(Amps.of(20)) // angle statorCurrentLimit
+        .withTelemetry("angleMotor", SmartMotorControllerConfig.TelemetryVerbosity.HIGH);
+
+    //I believe this has something to do with the solenoids, not sure
+    SmartMotorController driveSMC = new TalonFXWrapper(drive, DCMotor.getKrakenX60(1), driveConfig);
+    SmartMotorController azimuthSMC = new TalonFXWrapper(azimuth, DCMotor.getKrakenX60(1), azimuthConfig);
+    SwerveModuleConfig moduleConfig = new SwerveModuleConfig(driveSMC, azimuthSMC)
+        .withAbsoluteEncoder(absoluteEncoder.getAbsolutePosition().asSupplier())
+        .withTelemetry(moduleName, new SwerveModuleTelemetryConfig().withDataLogName("Swerve/" + moduleName)
+                                                                    .withTelemetryVerbosity(SmartMotorControllerConfig.TelemetryVerbosity.HIGH))
+        .withLocation(location)
+        .withOptimization(true);
+
+    return new SwerveModule(moduleConfig);
+  }
+
+  public DrivetrainSubsystem()
+  {
+    Pigeon2 gyro = new Pigeon2(13);
+    // 13 is our CAN Id
+
+    //10.875 and 11.375 are the actual distances from the module centers to the robot center in each axis
+    var fl = createModule(new TalonFX(7), 
+                          new TalonFX(8),
+                          new CANcoder(9),
+                          "frontleft",
+                          new Translation2d(Inches.of(10.875), Inches.of(11.375)));
+
+    var fr = createModule(new TalonFX(10),
+                          new TalonFX(11),
+                          new CANcoder(12),
+                          "frontright",
+                          new Translation2d(Inches.of(10.875), Inches.of(-11.375)));
+
+    var bl = createModule(new TalonFX(4),
+                          new TalonFX(5),
+                          new CANcoder(6),
+                          "backleft",
+                          new Translation2d(Inches.of(-10.875), Inches.of(11.375)));
+
+    var br = createModule(new TalonFX(1),
+                          new TalonFX(2),
+                          new CANcoder(3),
+                          "backright",
+                          new Translation2d(Inches.of(-10.875), Inches.of(-11.375)));
+
+    SwerveDriveConfig config = new SwerveDriveConfig(this, fl, fr, bl, br)
+        .withGyro(gyro::getRotation3d)
+        .withStartingPose(new Pose2d(0, 0, Rotation2d.fromDegrees(0)))
+        .withTranslationController(new PIDController(2.7, 0, 0.2))
+        .withRotationController(new PIDController(34, 0, 0.5))
+        .withTelemetry("swerve", new SwerveDriveTelemetryConfig().withDataLogName("Swerve")
+                                                              .withTelemetryVerbosity(SmartMotorControllerConfig.TelemetryVerbosity.HIGH));
+
+    drive = new SwerveDrive(config);
+
+    SmartDashboard.putData("Field", field);            
   }
   
-  SmartMotorControllerConfig azimuthConfig = new SmartMotorControllerConfig(this)
-      .withClosedLoopController(1, 0, 0)
-      .withFeedforward(new SimpleMotorFeedforward(0, 1))
-      .withGearing(azimuthGearing)
-      .withStatorCurrentLimit(Amps.of(20))
-      .withTelemetry("angleMotor", SmartMotorControllerConfig.TelemetryVerbosity.HIGH);
+  public Command drive(Supplier<ChassisSpeeds> speedsSupplier)
+  {
+    return run(() -> drive.setFieldRelativeChassisSpeeds(speedsSupplier.get())).withName("Field Oriented Drive");
+  }
 
-  /* I believe this has something to do with the solenoids, not sure
-  SmartMotorController driveSMC = new SparkWrapper(drive. DCMotor.getNEO(1), driveConfig);
-  SmartMotorController azimuthSMC = new SparkWrapper(azimuth, DCMotor.getNEO(1), azimuthConfig);
-  SwerveModuleConfig moduleConfig = new SwerveModuleConfig(driveSMC, azimuthSMC)
-      .withAbsoluteEncoder(absoluteEncoder.getAbsolutePosition().asSupplier())
-      .withTelemetry(moduleName, new. SwerveModuleTelemetryConfig().withDataLogName("Swerve/" + moduleName)
-                                                                    .withTelemetryVerbosity(SmartMotorControllerConfig.TelemetryVerbosity.HIGH))
-      .withLocation(location)
-      .withoptimization(true);
-  */
+  public Command setRobotRelativeChassisSpeeds(ChassisSpeeds speeds)
+  {
+    return run(() -> drive.setRobotRelativeChassisSpeeds(speeds));
+  }
 
-  return new SwerveModule(moduleConfig);
+  public Command driveToPose(Pose2d pose)
+  {
+    return drive.driveToPose(pose);
+  }
 
+    public Command driveRobotRelative(Supplier<ChassisSpeeds> speedsSupplier)
+  {
+    return drive.drive(speedsSupplier);
+  }
 
+  public Command lock()
+  {
+    return run(drive::lockPose);
+  }
 
+  public Command azimuthSysId()
+  {
+    return runOnce(() -> {});
+  }
+
+  public Command driveSysId()
+  {
+    return runOnce(() -> {});
+  }
+
+  @Override
+  public void periodic()
+  {
+    drive.updateTelemetry();
+    field.setRobotPose(drive.getPose());
+  }
+
+  @Override
+  public void simulationPeriodic()
+  {
+    drive.simIterate();
+  }
+}
 
 }
